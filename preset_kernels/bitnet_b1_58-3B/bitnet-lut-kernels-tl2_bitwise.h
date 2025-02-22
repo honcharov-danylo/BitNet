@@ -95,169 +95,169 @@ inline int32_t partial_max_reset(int32_t bs, void* lut_scales_) {
     }
     return 0;
 }
-template<int act_k>
-inline int32_t three_lut_ctor(int8_t* qlut, bitnet_float_type* b, bitnet_float_type* lut_scales) {
-#if defined __AVX2__
-    __m256 vec_lut[16];
-    const __m256i vec_bi = _mm256_set_epi32(84, 72, 60, 48, 36, 24, 12, 0);
-    float scales = *lut_scales;
-    __m256i shuffle_mask = _mm256_set_epi8(
-                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
-                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00,
-                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
-                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00
-                                            );
-#pragma unroll
-    for (int k = 0; k < act_k / 24; ++k) {
-        __m256 vec_b0 = _mm256_i32gather_ps(b + k * 24 + 0, vec_bi, 1);
-        __m256 vec_b1 = _mm256_i32gather_ps(b + k * 24 + 1, vec_bi, 1);
-        __m256 vec_b2 = _mm256_i32gather_ps(b + k * 24 + 2, vec_bi, 1);
-
-        __m256i vec_b0i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b0, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i vec_b1i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b1, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i vec_b2i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b2, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-
-        vec_lut[15] = _mm256_setzero_si256();
-        vec_lut[14] = _mm256_setzero_si256();
-        vec_lut[13] = vec_b0i;
-        vec_lut[13] = _mm256_add_epi32(vec_lut[13], vec_b1i);
-        vec_lut[13] = _mm256_add_epi32(vec_lut[13], vec_b2i);
-        vec_lut[12] = vec_b0i;
-        vec_lut[12] = _mm256_add_epi32(vec_lut[12], vec_b1i);
-        vec_lut[11] = vec_b0i;
-        vec_lut[11] = _mm256_add_epi32(vec_lut[11], vec_b1i);
-        vec_lut[11] = _mm256_sub_epi32(vec_lut[11], vec_b2i);
-        vec_lut[10] = vec_b0i;
-        vec_lut[10] = _mm256_add_epi32(vec_lut[10], vec_b2i);
-        vec_lut[9] = vec_b0i;
-        vec_lut[8] = vec_b0i;
-        vec_lut[8] = _mm256_sub_epi32(vec_lut[8], vec_b2i);
-        vec_lut[7] = vec_b0i;
-        vec_lut[7] = _mm256_sub_epi32(vec_lut[7], vec_b1i);
-        vec_lut[7] = _mm256_add_epi32(vec_lut[7], vec_b2i);
-        vec_lut[6] = vec_b0i;
-        vec_lut[6] = _mm256_sub_epi32(vec_lut[6], vec_b1i);
-        vec_lut[5] = vec_b0i;
-        vec_lut[5] = _mm256_sub_epi32(vec_lut[5], vec_b1i);
-        vec_lut[5] = _mm256_sub_epi32(vec_lut[5], vec_b2i);
-        vec_lut[4] = vec_b1i;
-        vec_lut[4] = _mm256_add_epi32(vec_lut[4], vec_b2i);
-        vec_lut[3] = vec_b1i;
-        vec_lut[2] = vec_b1i;
-        vec_lut[2] = _mm256_sub_epi32(vec_lut[2], vec_b2i);
-        vec_lut[1] = vec_b2i;
-        vec_lut[0] = _mm256_setzero_si256();
-        __m256i ix[16];
-
-#pragma unroll
-        for (int g = 0; g < 16; ++g) {
-            ix[g] = vec_lut[g];
-        }
-
-        Transpose_8_8(&(ix[0]), &(ix[1]), &(ix[2]), &(ix[3]), &(ix[4]), &(ix[5]),&(ix[6]), &(ix[7]));
-        Transpose_8_8(&(ix[8]), &(ix[9]), &(ix[10]), &(ix[11]), &(ix[12]), &(ix[13]),&(ix[14]), &(ix[15]));
-
-#pragma unroll
-        for (int g = 0; g < 8; ++g) {
-            ix[g] = _mm256_packs_epi32(ix[g], ix[g + 8]);
-            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
-            ix[g] = _mm256_shuffle_epi8(ix[g], shuffle_mask);
-            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
-        }
-        int8_t* qlut_i8 = reinterpret_cast<int8_t*>(qlut);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 0 * 32 + 0), ix[0]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 1 * 32 + 0), ix[1]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 2 * 32 + 0), ix[2]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 3 * 32 + 0), ix[3]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 4 * 32 + 0), ix[4]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 5 * 32 + 0), ix[5]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 6 * 32 + 0), ix[6]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 7 * 32 + 0), ix[7]);
-
-    }
-
-    *lut_scales = scales;
-#endif
-    return 0;
-}
-
-template<int act_k>
-inline int32_t two_lut_ctor(int8_t* qlut, bitnet_float_type* b, bitnet_float_type* lut_scales) {
-#if defined __AVX2__
-    __m256 vec_lut[16];
-    const __m256i vec_bi = _mm256_set_epi32(56, 48, 40, 32, 24, 16, 8, 0);
-    float scales = *lut_scales;
-    __m256i shuffle_mask = _mm256_set_epi8(
-                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
-                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00,
-                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
-                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00
-                                            );
-#pragma unroll
-    for (int k = 0; k < act_k / 16; ++k) {
-        __m256 vec_b0f = _mm256_i32gather_ps(b + k * 16 + 0, vec_bi, 1);
-        __m256 vec_b1f = _mm256_i32gather_ps(b + k * 16 + 1, vec_bi, 1);
-
-        __m256i vec_b0 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b0f, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i vec_b1 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b1f, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        vec_lut[15] = _mm256_setzero_si256();
-        vec_lut[14] = _mm256_setzero_si256();
-        vec_lut[13] = _mm256_setzero_si256();
-        vec_lut[12] = _mm256_setzero_si256();
-        vec_lut[11] = _mm256_setzero_si256();
-        vec_lut[10] = _mm256_setzero_si256();
-        vec_lut[9] = _mm256_setzero_si256();
-        vec_lut[8] = vec_b0;
-        vec_lut[8] = _mm256_add_epi32(vec_lut[8], vec_b1);
-        vec_lut[7] = vec_b0;
-        vec_lut[6] = vec_b0;
-        vec_lut[6] = _mm256_sub_epi32(vec_lut[6], vec_b1);
-        vec_lut[5] = vec_b1;
-        vec_lut[4] = _mm256_setzero_si256();
-        vec_lut[3] = _mm256_setzero_si256();
-        vec_lut[3] = _mm256_sub_epi32(vec_lut[3], vec_b1);
-        vec_lut[2] = _mm256_setzero_si256();
-        vec_lut[2] = _mm256_sub_epi32(vec_lut[2], vec_b0);
-        vec_lut[2] = _mm256_add_epi32(vec_lut[2], vec_b1);
-        vec_lut[1] = _mm256_setzero_si256();
-        vec_lut[1] = _mm256_sub_epi32(vec_lut[1], vec_b0);
-        vec_lut[0] = _mm256_setzero_si256();
-        vec_lut[0] = _mm256_sub_epi32(vec_lut[0], vec_b0);
-        vec_lut[0] = _mm256_sub_epi32(vec_lut[0], vec_b1);
-
-        __m256i ix[16];
-#pragma unroll
-        for (int g = 0; g < 16; ++g) {
-            ix[g] = vec_lut[g];
-        }
-
-        Transpose_8_8(&(ix[0]), &(ix[1]), &(ix[2]), &(ix[3]), &(ix[4]), &(ix[5]),&(ix[6]), &(ix[7]));
-        Transpose_8_8(&(ix[8]), &(ix[9]), &(ix[10]), &(ix[11]), &(ix[12]), &(ix[13]),&(ix[14]), &(ix[15]));
-
-#pragma unroll
-        for (int g = 0; g < 8; ++g) {
-            ix[g] = _mm256_packs_epi32(ix[g], ix[g + 8]);
-            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
-            ix[g] = _mm256_shuffle_epi8(ix[g], shuffle_mask);
-            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
-        }
-
-        int8_t* qlut_i8 = reinterpret_cast<int8_t*>(qlut);
-
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 0 * 32 + 0), ix[0]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 1 * 32 + 0), ix[1]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 2 * 32 + 0), ix[2]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 3 * 32 + 0), ix[3]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 4 * 32 + 0), ix[4]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 5 * 32 + 0), ix[5]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 6 * 32 + 0), ix[6]);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 7 * 32 + 0), ix[7]);
-
-    }
-    *lut_scales = scales;
-#endif
-    return 0;
-}
+//template<int act_k>
+//inline int32_t three_lut_ctor(int8_t* qlut, bitnet_float_type* b, bitnet_float_type* lut_scales) {
+//#if defined __AVX2__
+//    __m256 vec_lut[16];
+//    const __m256i vec_bi = _mm256_set_epi32(84, 72, 60, 48, 36, 24, 12, 0);
+//    float scales = *lut_scales;
+//    __m256i shuffle_mask = _mm256_set_epi8(
+//                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
+//                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00,
+//                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
+//                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00
+//                                            );
+//#pragma unroll
+//    for (int k = 0; k < act_k / 24; ++k) {
+//        __m256 vec_b0 = _mm256_i32gather_ps(b + k * 24 + 0, vec_bi, 1);
+//        __m256 vec_b1 = _mm256_i32gather_ps(b + k * 24 + 1, vec_bi, 1);
+//        __m256 vec_b2 = _mm256_i32gather_ps(b + k * 24 + 2, vec_bi, 1);
+//
+//        __m256i vec_b0i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b0, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+//        __m256i vec_b1i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b1, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+//        __m256i vec_b2i = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b2, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+//
+//        vec_lut[15] = _mm256_setzero_si256();
+//        vec_lut[14] = _mm256_setzero_si256();
+//        vec_lut[13] = vec_b0i;
+//        vec_lut[13] = _mm256_add_epi32(vec_lut[13], vec_b1i);
+//        vec_lut[13] = _mm256_add_epi32(vec_lut[13], vec_b2i);
+//        vec_lut[12] = vec_b0i;
+//        vec_lut[12] = _mm256_add_epi32(vec_lut[12], vec_b1i);
+//        vec_lut[11] = vec_b0i;
+//        vec_lut[11] = _mm256_add_epi32(vec_lut[11], vec_b1i);
+//        vec_lut[11] = _mm256_sub_epi32(vec_lut[11], vec_b2i);
+//        vec_lut[10] = vec_b0i;
+//        vec_lut[10] = _mm256_add_epi32(vec_lut[10], vec_b2i);
+//        vec_lut[9] = vec_b0i;
+//        vec_lut[8] = vec_b0i;
+//        vec_lut[8] = _mm256_sub_epi32(vec_lut[8], vec_b2i);
+//        vec_lut[7] = vec_b0i;
+//        vec_lut[7] = _mm256_sub_epi32(vec_lut[7], vec_b1i);
+//        vec_lut[7] = _mm256_add_epi32(vec_lut[7], vec_b2i);
+//        vec_lut[6] = vec_b0i;
+//        vec_lut[6] = _mm256_sub_epi32(vec_lut[6], vec_b1i);
+//        vec_lut[5] = vec_b0i;
+//        vec_lut[5] = _mm256_sub_epi32(vec_lut[5], vec_b1i);
+//        vec_lut[5] = _mm256_sub_epi32(vec_lut[5], vec_b2i);
+//        vec_lut[4] = vec_b1i;
+//        vec_lut[4] = _mm256_add_epi32(vec_lut[4], vec_b2i);
+//        vec_lut[3] = vec_b1i;
+//        vec_lut[2] = vec_b1i;
+//        vec_lut[2] = _mm256_sub_epi32(vec_lut[2], vec_b2i);
+//        vec_lut[1] = vec_b2i;
+//        vec_lut[0] = _mm256_setzero_si256();
+//        __m256i ix[16];
+//
+//#pragma unroll
+//        for (int g = 0; g < 16; ++g) {
+//            ix[g] = vec_lut[g];
+//        }
+//
+//        Transpose_8_8(&(ix[0]), &(ix[1]), &(ix[2]), &(ix[3]), &(ix[4]), &(ix[5]),&(ix[6]), &(ix[7]));
+//        Transpose_8_8(&(ix[8]), &(ix[9]), &(ix[10]), &(ix[11]), &(ix[12]), &(ix[13]),&(ix[14]), &(ix[15]));
+//
+//#pragma unroll
+//        for (int g = 0; g < 8; ++g) {
+//            ix[g] = _mm256_packs_epi32(ix[g], ix[g + 8]);
+//            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
+//            ix[g] = _mm256_shuffle_epi8(ix[g], shuffle_mask);
+//            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
+//        }
+//        int8_t* qlut_i8 = reinterpret_cast<int8_t*>(qlut);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 0 * 32 + 0), ix[0]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 1 * 32 + 0), ix[1]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 2 * 32 + 0), ix[2]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 3 * 32 + 0), ix[3]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 4 * 32 + 0), ix[4]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 5 * 32 + 0), ix[5]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 6 * 32 + 0), ix[6]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 7 * 32 + 0), ix[7]);
+//
+//    }
+//
+//    *lut_scales = scales;
+//#endif
+//    return 0;
+//}
+//
+//template<int act_k>
+//inline int32_t two_lut_ctor(int8_t* qlut, bitnet_float_type* b, bitnet_float_type* lut_scales) {
+//#if defined __AVX2__
+//    __m256 vec_lut[16];
+//    const __m256i vec_bi = _mm256_set_epi32(56, 48, 40, 32, 24, 16, 8, 0);
+//    float scales = *lut_scales;
+//    __m256i shuffle_mask = _mm256_set_epi8(
+//                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
+//                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00,
+//                                            0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
+//                                            0x0e, 0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00
+//                                            );
+//#pragma unroll
+//    for (int k = 0; k < act_k / 16; ++k) {
+//        __m256 vec_b0f = _mm256_i32gather_ps(b + k * 16 + 0, vec_bi, 1);
+//        __m256 vec_b1f = _mm256_i32gather_ps(b + k * 16 + 1, vec_bi, 1);
+//
+//        __m256i vec_b0 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b0f, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+//        __m256i vec_b1 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(vec_b1f, _mm256_set1_ps(scales)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+//        vec_lut[15] = _mm256_setzero_si256();
+//        vec_lut[14] = _mm256_setzero_si256();
+//        vec_lut[13] = _mm256_setzero_si256();
+//        vec_lut[12] = _mm256_setzero_si256();
+//        vec_lut[11] = _mm256_setzero_si256();
+//        vec_lut[10] = _mm256_setzero_si256();
+//        vec_lut[9] = _mm256_setzero_si256();
+//        vec_lut[8] = vec_b0;
+//        vec_lut[8] = _mm256_add_epi32(vec_lut[8], vec_b1);
+//        vec_lut[7] = vec_b0;
+//        vec_lut[6] = vec_b0;
+//        vec_lut[6] = _mm256_sub_epi32(vec_lut[6], vec_b1);
+//        vec_lut[5] = vec_b1;
+//        vec_lut[4] = _mm256_setzero_si256();
+//        vec_lut[3] = _mm256_setzero_si256();
+//        vec_lut[3] = _mm256_sub_epi32(vec_lut[3], vec_b1);
+//        vec_lut[2] = _mm256_setzero_si256();
+//        vec_lut[2] = _mm256_sub_epi32(vec_lut[2], vec_b0);
+//        vec_lut[2] = _mm256_add_epi32(vec_lut[2], vec_b1);
+//        vec_lut[1] = _mm256_setzero_si256();
+//        vec_lut[1] = _mm256_sub_epi32(vec_lut[1], vec_b0);
+//        vec_lut[0] = _mm256_setzero_si256();
+//        vec_lut[0] = _mm256_sub_epi32(vec_lut[0], vec_b0);
+//        vec_lut[0] = _mm256_sub_epi32(vec_lut[0], vec_b1);
+//
+//        __m256i ix[16];
+//#pragma unroll
+//        for (int g = 0; g < 16; ++g) {
+//            ix[g] = vec_lut[g];
+//        }
+//
+//        Transpose_8_8(&(ix[0]), &(ix[1]), &(ix[2]), &(ix[3]), &(ix[4]), &(ix[5]),&(ix[6]), &(ix[7]));
+//        Transpose_8_8(&(ix[8]), &(ix[9]), &(ix[10]), &(ix[11]), &(ix[12]), &(ix[13]),&(ix[14]), &(ix[15]));
+//
+//#pragma unroll
+//        for (int g = 0; g < 8; ++g) {
+//            ix[g] = _mm256_packs_epi32(ix[g], ix[g + 8]);
+//            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
+//            ix[g] = _mm256_shuffle_epi8(ix[g], shuffle_mask);
+//            ix[g] = _mm256_permute4x64_epi64(ix[g], _MM_SHUFFLE(3, 1, 2, 0));
+//        }
+//
+//        int8_t* qlut_i8 = reinterpret_cast<int8_t*>(qlut);
+//
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 0 * 32 + 0), ix[0]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 1 * 32 + 0), ix[1]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 2 * 32 + 0), ix[2]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 3 * 32 + 0), ix[3]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 4 * 32 + 0), ix[4]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 5 * 32 + 0), ix[5]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 6 * 32 + 0), ix[6]);
+//        _mm256_storeu_si256(reinterpret_cast<__m256i*>(qlut_i8 + k * 256 + 7 * 32 + 0), ix[7]);
+//
+//    }
+//    *lut_scales = scales;
+//#endif
+//    return 0;
+//}
 static bool is_type_supported(enum ggml_type type) {
     if (type == GGML_TYPE_Q4_0 ||
         type == GGML_TYPE_TL2) {
@@ -998,30 +998,30 @@ int32_t two_qgemm_lut_8640_3200(void* A, void* LUT, void* Scales, void* LUT_Scal
   return 0;
 }
 
-void ggml_preprocessor(int bs, int m, int three_k, int two_k, void* B, void* LUT_Scales, void* Three_QLUT, void* Two_QLUT) {
-    partial_max_reset(bs, (&(((float*)LUT_Scales)[0])));
-    if (m == 3200 && two_k == 0 && three_k == 8640) {
-        for (int32_t b = 0; b < bs; b++) {
-            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
-            three_lut_ctor<8640>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
-            two_lut_ctor<0>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 8640])), (&(((float*)LUT_Scales)[b])));
-        }
-    }
-    else if (m == 3200 && two_k == 32 && three_k == 3168) {
-        for (int32_t b = 0; b < bs; b++) {
-            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
-            three_lut_ctor<3168>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
-            two_lut_ctor<32>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 3168])), (&(((float*)LUT_Scales)[b])));
-        }
-    }
-    else if (m == 8640 && two_k == 32 && three_k == 3168) {
-        for (int32_t b = 0; b < bs; b++) {
-            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
-            three_lut_ctor<3168>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
-            two_lut_ctor<32>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 3168])), (&(((float*)LUT_Scales)[b])));
-        }
-    }
-}
+//void ggml_preprocessor(int bs, int m, int three_k, int two_k, void* B, void* LUT_Scales, void* Three_QLUT, void* Two_QLUT) {
+//    partial_max_reset(bs, (&(((float*)LUT_Scales)[0])));
+//    if (m == 3200 && two_k == 0 && three_k == 8640) {
+//        for (int32_t b = 0; b < bs; b++) {
+//            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
+//            three_lut_ctor<8640>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
+//            two_lut_ctor<0>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 8640])), (&(((float*)LUT_Scales)[b])));
+//        }
+//    }
+//    else if (m == 3200 && two_k == 32 && three_k == 3168) {
+//        for (int32_t b = 0; b < bs; b++) {
+//            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
+//            three_lut_ctor<3168>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
+//            two_lut_ctor<32>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 3168])), (&(((float*)LUT_Scales)[b])));
+//        }
+//    }
+//    else if (m == 8640 && two_k == 32 && three_k == 3168) {
+//        for (int32_t b = 0; b < bs; b++) {
+//            per_tensor_quant(two_k + three_k, (&(((float*)LUT_Scales)[b])), (&(((float*)B)[b * (two_k + three_k)])));
+//            three_lut_ctor<3168>((&(((int8_t*)Three_QLUT)[b * three_k / 3 * 32])), (&(((float*)B)[b * (three_k + two_k)])), (&(((float*)LUT_Scales)[b])));
+//            two_lut_ctor<32>((&(((int8_t*)Two_QLUT)[b * two_k / 2 * 32])), (&(((float*)B)[b * (three_k + two_k) + 3168])), (&(((float*)LUT_Scales)[b])));
+//        }
+//    }
+//}
 void ggml_qgemm_lut(int bs, int m, int k, int BK, void* A, void* sign, void* LUT, void* Scales, void* LUT_Scales, void* C) {
     if (m == 3200 && k == 8640) {
         if (BK == 0) {
