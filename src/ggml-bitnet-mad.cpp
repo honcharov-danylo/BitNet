@@ -7,8 +7,8 @@
 #include <cmath>
 #include <cstring>
 
-#define QK_I2_S 256
-#define QK_I2 256
+#define QK_I2_S 128
+#define QK_I2 128
 
 #if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__) || defined(__SSSE3__)
 #include <immintrin.h>
@@ -232,82 +232,130 @@ static inline int hsum_i32_8(const __m256i a) {
 //     return nrow * row_size / 4 + 32;
 // }
 
+// size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+//     (void) quant_weights; // not used in this implementation
+//
+//     // Total number of elements to quantize.
+//     int64_t n = nrow * n_per_row;
+//
+//     // 1. Compute the scale factor as the maximum absolute value over src.
+//     double max_val = 0.0;
+//     for (int64_t i = 0; i < n; i++) {
+//         double abs_val = fabs(src[i]);
+//         if (abs_val > max_val) {
+//             max_val = abs_val;
+//         }
+//     }
+//     double i2_scale = max_val;
+//
+//     // 2. Create a temporary array to hold the quantized 2-bit codes.
+//     // Mapping: if fabs(src[i]) < 1e-6 then code = 0; else if src[i] > 0 then code = 1; else code = 3.
+//     uint8_t * q8 = (uint8_t *) malloc(n * sizeof(uint8_t));
+//     for (int64_t i = 0; i < n; i++) {
+//         float v = src[i];
+//         if (fabs(v) < 1e-6f) {
+//             q8[i] = 0;
+//         } else {
+//             q8[i] = (v > 0.0f) ? 1 : 3;
+//         }
+//     }
+//
+//     // 3. Pack the 2-bit codes into dst in a linear layout.
+//     // Each block of QK_I2_S (128) elements occupies 128 * 2 bits = 256 bits = 32 bytes.
+//     uint8_t * i2_weight = (uint8_t *) dst;
+//     int64_t nblocks = n / QK_I2_S;  // number of full blocks
+//     int64_t remainder = n % QK_I2_S;  // remaining elements (if any)
+//
+//     // Process each full block.
+//     for (int64_t block = 0; block < nblocks; block++) {
+//         int64_t base = block * QK_I2_S;   // index offset in q8 for this block
+//         uint8_t * out_block = i2_weight + block * 64;  // each block occupies 32 bytes
+//         memset(out_block, 0, 64);         // clear the block
+//
+//         // Pack QK_I2_S values into 32 bytes in sequential order.
+//         for (int j = 0; j < QK_I2_S; j++) {
+//             // Each byte holds 4 2-bit values.
+//             int byte_idx = j / 4;         // which byte in the block
+//             int shift = 2 * (j % 4);        // bit offset within that byte: 0,2,4,6
+//             uint8_t code = q8[base + j] & 0x03;  // ensure only 2 bits are used
+//             out_block[byte_idx] |= (code << shift);
+//         }
+//     }
+//
+//     // Process any leftover elements as one additional (partial) block.
+//     if (remainder > 0) {
+//         int64_t base = nblocks * QK_I2_S;
+//         uint8_t * out_block = i2_weight + nblocks * 64;
+//         memset(out_block, 0, 64);
+//         for (int j = 0; j < remainder; j++) {
+//             int byte_idx = j / 4;
+//             int shift = 2 * (j % 4);
+//             uint8_t code = q8[base + j] & 0x03;
+//             out_block[byte_idx] |= (code << shift);
+//         }
+//         nblocks++;  // count the partial block as a full block for storage
+//     }
+//
+//     // 4. Store the scale factor immediately after the quantized data.
+//     // The scale is stored as a 4-byte float.
+//     float * scale_ptr = (float *) (i2_weight + nblocks * 64);
+//     scale_ptr[0] = (float) i2_scale;
+//
+//     // 5. Calculate and return the total number of bytes used.
+//     size_t total_bytes = nblocks * 64 + sizeof(float);
+//
+//     free(q8);
+//     return total_bytes;
+// }
+
+
 size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void) quant_weights; // not used in this implementation
+    // 2 bits per weight
 
-    // Total number of elements to quantize.
-    int64_t n = nrow * n_per_row;
+    size_t row_size = ggml_row_size(GGML_TYPE_I2_S, n_per_row);
 
-    // 1. Compute the scale factor as the maximum absolute value over src.
-    double max_val = 0.0;
-    for (int64_t i = 0; i < n; i++) {
-        double abs_val = fabs(src[i]);
-        if (abs_val > max_val) {
-            max_val = abs_val;
-        }
+    int n = nrow * n_per_row;
+
+    // f32 -> q8
+    double max = 0;
+    for (int i = 0; i < n; ++i) {
+        max = fmax(max, (double)fabs((double)src[i]));
     }
-    double i2_scale = max_val;
+    double i2_scale = max;
 
-    // 2. Create a temporary array to hold the quantized 2-bit codes.
-    // Mapping: if fabs(src[i]) < 1e-6 then code = 0; else if src[i] > 0 then code = 1; else code = 3.
-    uint8_t * q8 = (uint8_t *) malloc(n * sizeof(uint8_t));
-    for (int64_t i = 0; i < n; i++) {
-        float v = src[i];
-        if (fabs(v) < 1e-6f) {
+    uint8_t* q8 = (uint8_t*)malloc(n * sizeof(uint8_t));
+    for (int i=0; i<n; i++) {
+        if (fabs((double)(src[i])) < 1e-6) {
             q8[i] = 0;
-        } else {
-            q8[i] = (v > 0.0f) ? 1 : 3;
+            continue;
+        }
+        q8[i] = (double)src[i] * i2_scale > 0 ? 1 : 3;
+    }
+
+    memset(dst, 0, n * sizeof(uint8_t) / 4);
+
+    // q8 -> -1, 0, 1
+    //       |  |  |
+    //      11, 0, 1
+
+    uint8_t* i2_weight = (uint8_t*)dst;
+    for (int i = 0; i < n / QK_I2; i++) {
+        for (int j = 0; j < QK_I2; j++) {
+            int group_idx = j / 32;
+            int group_pos = j % 32;
+            uint8_t temp = (q8[i * QK_I2 + j] << (6 - 2 * group_idx));
+            i2_weight[i * 32 + group_pos] |= temp;
         }
     }
 
-    // 3. Pack the 2-bit codes into dst in a linear layout.
-    // Each block of QK_I2_S (128) elements occupies 128 * 2 bits = 256 bits = 32 bytes.
-    uint8_t * i2_weight = (uint8_t *) dst;
-    int64_t nblocks = n / QK_I2_S;  // number of full blocks
-    int64_t remainder = n % QK_I2_S;  // remaining elements (if any)
-
-    // Process each full block.
-    for (int64_t block = 0; block < nblocks; block++) {
-        int64_t base = block * QK_I2_S;   // index offset in q8 for this block
-        uint8_t * out_block = i2_weight + block * 64;  // each block occupies 32 bytes
-        memset(out_block, 0, 64);         // clear the block
-
-        // Pack QK_I2_S values into 32 bytes in sequential order.
-        for (int j = 0; j < QK_I2_S; j++) {
-            // Each byte holds 4 2-bit values.
-            int byte_idx = j / 4;         // which byte in the block
-            int shift = 2 * (j % 4);        // bit offset within that byte: 0,2,4,6
-            uint8_t code = q8[base + j] & 0x03;  // ensure only 2 bits are used
-            out_block[byte_idx] |= (code << shift);
-        }
-    }
-
-    // Process any leftover elements as one additional (partial) block.
-    if (remainder > 0) {
-        int64_t base = nblocks * QK_I2_S;
-        uint8_t * out_block = i2_weight + nblocks * 64;
-        memset(out_block, 0, 64);
-        for (int j = 0; j < remainder; j++) {
-            int byte_idx = j / 4;
-            int shift = 2 * (j % 4);
-            uint8_t code = q8[base + j] & 0x03;
-            out_block[byte_idx] |= (code << shift);
-        }
-        nblocks++;  // count the partial block as a full block for storage
-    }
-
-    // 4. Store the scale factor immediately after the quantized data.
-    // The scale is stored as a 4-byte float.
-    float * scale_ptr = (float *) (i2_weight + nblocks * 64);
-    scale_ptr[0] = (float) i2_scale;
-
-    // 5. Calculate and return the total number of bytes used.
-    size_t total_bytes = nblocks * 64 + sizeof(float);
+    float* scale_ptr = (float*)((char*)i2_weight + n / 4);
+    scale_ptr[0] = i2_scale;
 
     free(q8);
-    return total_bytes;
-}
 
+    // 32B for alignment
+    return nrow * row_size / 4 + 32;
+}
 
 // void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
 //     const uint8_t *    x = (uint8_t *)vx;
@@ -581,7 +629,7 @@ size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_
 // }
 
 
-#define QK_I2_S 256  // typical from the original code
+#define QK_I2_S 128  // typical from the original code
 
 static inline uint8_t top_bits_of_byte(uint8_t byte)    { return (byte >> 6) & 0x03; }
 static inline uint8_t upper_mid_bits(uint8_t byte)      { return (byte >> 4) & 0x03; }
@@ -1369,19 +1417,178 @@ int dot_block_i2_i8_avx2_full(const uint8_t *x_block, const int8_t *y_block) {
 // }quantize_row_i8_s
 
 // Wrapper function remains essentially the same.
-void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs,
-                           const void * vx, size_t bx,
-                           const void * vy, size_t by,
-                           int nrc)
+
+// void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs,
+//                            const void * vx, size_t bx,
+//                            const void * vy, size_t by,
+//                            int nrc)
+// {
+//     const uint8_t * x = reinterpret_cast<const uint8_t *>(vx);
+//     const int8_t  * y = reinterpret_cast<const int8_t *>(vy);
+//     int nb = n / 256; // Each block decodes 256 values.
+//     long long sum = 0;
+//     for (int i = 0; i < nb; i++) {
+//         sum += dot_block_i2_i8_avx2_full(x + i * 64, y + i * 256);
+//     }
+//     *s = static_cast<float>(sum);
+// }
+
+
+
+void ggml_vec_dot_i2_i8_s(
+    int n,
+    float * s,
+    size_t bs,
+    const void * vx,
+    size_t bx,
+    const void * vy,
+    size_t by,
+    int nrc)
 {
-    const uint8_t * x = reinterpret_cast<const uint8_t *>(vx);
-    const int8_t  * y = reinterpret_cast<const int8_t *>(vy);
-    int nb = n / 256; // Each block decodes 256 values.
-    long long sum = 0;
-    for (int i = 0; i < nb; i++) {
-        sum += dot_block_i2_i8_avx2_full(x + i * 64, y + i * 256);
+    const uint8_t * x = (const uint8_t *) vx;
+    const int8_t  * y = (const int8_t  *) vy;
+
+    // How many groups of QK_I2_S, same as before:
+    const int nb = n / QK_I2_S;
+    const int group32_num  = nb / 32;
+    const int la_num       = nb % 32;
+    const int groupla_num  = la_num ? 1 : 0;
+
+#if defined(__AVX2__)
+
+    // We'll accumulate final result in 32-bit registers
+    __m256i accu = _mm256_setzero_si256();
+
+    // A mask to keep only the *top* 2 bits in each byte, i.e. 0xC0 = b11000000
+    const __m256i top2_mask = _mm256_set1_epi8((char)0xC0);
+
+    for (int i = 0; i < group32_num; i++) {
+        // partial sum in 32 bits
+        __m256i accu32 = _mm256_setzero_si256();
+
+        // loop over 32 "blocks" (similar to old code)
+        for (int j = 0; j < 32; j++) {
+            // load 32 bytes from x
+            __m256i x_bytes = _mm256_loadu_si256((const __m256i *)(x + i*32*32 + j*32));
+
+            // For 2-bit data in the top bits, you might have multiple sub-chunks
+            // each sub-chunk could represent one of the 4 weights inside that byte.
+            // This example just shows the conceptual approach:
+
+            __m256i x0 = x_bytes;                         // group 0: bits [7:6]
+            __m256i x1 = _mm256_slli_epi16(x_bytes, 2);       // group 1: bits [5:4] → [7:6]
+            __m256i x2 = _mm256_slli_epi16(x_bytes, 4);       // group 2: bits [3:2] → [7:6]
+            __m256i x3 = _mm256_slli_epi16(x_bytes, 6);
+            // keep only the top bits
+            x0 = _mm256_and_si256(x0, top2_mask);
+            x1 = _mm256_and_si256(x1, top2_mask);
+            x2 = _mm256_and_si256(x2, top2_mask);
+            x3 = _mm256_and_si256(x3, top2_mask);
+
+            // load y in 4 sub-chunks (32 bytes each) - same as the old maddubs approach
+            __m256i y0 = _mm256_loadu_si256((const __m256i*)(y + i*128*32 + j*128 + 0));
+            __m256i y1 = _mm256_loadu_si256((const __m256i*)(y + i*128*32 + j*128 + 32));
+            __m256i y2 = _mm256_loadu_si256((const __m256i*)(y + i*128*32 + j*128 + 64));
+            __m256i y3 = _mm256_loadu_si256((const __m256i*)(y + i*128*32 + j*128 + 96));
+
+
+            // "Multiply" by -1, 0, or +1 via sign bits in xN.
+            // PSIGNB: if x < 0 => -y, if x = 0 => 0, if x>0 => y
+            __m256i r0 = _mm256_sign_epi8(y0, x0);
+            __m256i r1 = _mm256_sign_epi8(y1, x1);
+            __m256i r2 = _mm256_sign_epi8(y2, x2);
+            __m256i r3 = _mm256_sign_epi8(y3, x3);
+
+            // Now we have 32 int8s in each rN, but we want to sum them in 16 or 32 bits.
+            // We'll sign-extend from int8 -> int16 in two steps (low half, high half).
+            __m256i r0_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r0));
+            __m256i r0_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r0, 1));
+
+            __m256i r1_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r1));
+            __m256i r1_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r1, 1));
+
+            __m256i r2_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r2));
+            __m256i r2_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r2, 1));
+
+            __m256i r3_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r3));
+            __m256i r3_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r3, 1));
+
+            // sum each pair of 16-bit vectors
+            __m256i sum0 = _mm256_add_epi16(r0_lo, r0_hi);
+            __m256i sum1 = _mm256_add_epi16(r1_lo, r1_hi);
+            __m256i sum2 = _mm256_add_epi16(r2_lo, r2_hi);
+            __m256i sum3 = _mm256_add_epi16(r3_lo, r3_hi);
+
+            __m256i sumA = _mm256_add_epi16(sum0, sum1);
+            __m256i sumB = _mm256_add_epi16(sum2, sum3);
+            __m256i sumAll = _mm256_add_epi16(sumA, sumB);
+
+            // Finally, we can "multiply" by 1 in 16 bits to get 32 bits
+            // or use `_mm256_madd_epi16(sumAll, ones16)`
+            __m256i ones16 = _mm256_set1_epi16(1);
+            // each 16-bit lane of sumAll -> add into 32-bit lane:
+            __m256i sum32 = _mm256_madd_epi16(sumAll, ones16);
+
+            // accumulate into accu32
+            accu32 = _mm256_add_epi32(accu32, sum32);
+        }
+        // add partial sum to global accumulator
+        accu = _mm256_add_epi32(accu, accu32);
     }
-    *s = static_cast<float>(sum);
+
+        // handle leftover 'la_num' if needed
+    if (groupla_num) {
+        __m256i accula = _mm256_setzero_si256();
+        // Pointer offset for leftover blocks:
+        const uint8_t * x_left = x + group32_num * 32 * 32;
+        const int8_t  * y_left = y + group32_num * 128 * 32;
+        for (int j = 0; j < la_num; j++) {
+            __m256i x_bytes = _mm256_loadu_si256((const __m256i *)(x_left + j * 32));
+            __m256i x0 = _mm256_and_si256(x_bytes, top2_mask);
+            __m256i x1 = _mm256_and_si256(_mm256_slli_epi16(x_bytes, 2), top2_mask);
+            __m256i x2 = _mm256_and_si256(_mm256_slli_epi16(x_bytes, 4), top2_mask);
+            __m256i x3 = _mm256_and_si256(_mm256_slli_epi16(x_bytes, 6), top2_mask);
+
+            __m256i y0 = _mm256_loadu_si256((const __m256i *)(y_left + j * 128 +  0));
+            __m256i y1 = _mm256_loadu_si256((const __m256i *)(y_left + j * 128 + 32));
+            __m256i y2 = _mm256_loadu_si256((const __m256i *)(y_left + j * 128 + 64));
+            __m256i y3 = _mm256_loadu_si256((const __m256i *)(y_left + j * 128 + 96));
+
+            __m256i r0 = _mm256_sign_epi8(y0, x0);
+            __m256i r1 = _mm256_sign_epi8(y1, x1);
+            __m256i r2 = _mm256_sign_epi8(y2, x2);
+            __m256i r3 = _mm256_sign_epi8(y3, x3);
+
+            __m256i r0_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r0));
+            __m256i r0_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r0, 1));
+            __m256i r1_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r1));
+            __m256i r1_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r1, 1));
+            __m256i r2_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r2));
+            __m256i r2_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r2, 1));
+            __m256i r3_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r3));
+            __m256i r3_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r3, 1));
+
+            __m256i sum0 = _mm256_add_epi16(r0_lo, r0_hi);
+            __m256i sum1 = _mm256_add_epi16(r1_lo, r1_hi);
+            __m256i sum2 = _mm256_add_epi16(r2_lo, r2_hi);
+            __m256i sum3 = _mm256_add_epi16(r3_lo, r3_hi);
+            __m256i sumA = _mm256_add_epi16(sum0, sum1);
+            __m256i sumB = _mm256_add_epi16(sum2, sum3);
+            __m256i sumAll = _mm256_add_epi16(sumA, sumB);
+
+            __m256i ones16 = _mm256_set1_epi16(1);
+            __m256i sum32 = _mm256_madd_epi16(sumAll, ones16);
+
+            accula = _mm256_add_epi32(accula, sum32);
+        }
+        accu = _mm256_add_epi32(accu, accula);
+    }
+
+    // final horizontal sum
+    int sumi = hsum_i32_8(accu);
+    *s = (float) sumi;
+#endif
+
 }
 
 
